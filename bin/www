@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('chat-app:server');
+var http = require('http');
+const socketio = require('socket.io');
+const Filter = require('bad-words');
+
+// FILE IMPORTS
+const { generateMsg, generateLocationMessage, renderRoomData } = require('../utils/messages');
+const { addUser, getUser, getUsersInRoom, removeUser } = require('../utils/users')
+
+const filter = new Filter();        //? Filter for checking bad words
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+const io = socketio(server);
+
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port, () => {
+  console.log('Server listening to port', port)
+});
+server.on('error', onError);
+server.on('listening', onListening);
+
+/* Socket Events */
+let count = 0;
+
+io.on('connection', (socket) => {
+  console.log('Socket Connection Successfully established!');
+
+  socket.on('join', (options, callback) => {
+    const { error, user } = addUser({ id: socket.id, ...options })    // OR addUser({ id: socket.id, username, room })
+
+    if (error) return callback(error);
+
+    socket.join(user.room);
+    // JOIN events
+    // io.to.emit (emits to everyone in a specific room and not to all the users), 
+    // socket.broadcast.to.emit (broadcast+to.emit)
+
+    socket.emit('message', generateMsg('Welcome!'));
+    socket.broadcast.to(user.room).emit('message', generateMsg(`${user.username} has joined!`));
+
+    io.to(user.room).emit('renderRoomData', {
+      room: user.room,
+      users: getUsersInRoom(user.room)
+    })
+    callback();
+  })
+
+
+  socket.on('sendMessage', (msg, callback /*[OPTIONAL PARAMETER]*/) => {
+    const { error, user } = getUser(socket.id)
+
+    if (error) return callback(error);
+    if (msg.length === 0) return callback('Empty message found')
+    // if(filter.isProfane(msg)) return callback('Profane message found!')
+    io.to(user.room).emit('message', generateMsg(filter.clean(msg), user.username));
+    callback();
+  })
+
+  // Location Emmiter
+  socket.on('sendLocation', (data, callback) => {
+    const { error, user } = getUser(socket.id)
+    if (error) return callback(error);
+    console.log('USER: ', user)
+    io.to(user.room).emit('locationMessage', generateLocationMessage(data.lat, data.longi, user.username));
+    callback();
+  })
+
+  socket.on('disconnect', () => {
+    const user = removeUser(socket.id);
+    if (user) {
+      io.to(user.room).emit('renderRoomData', {
+        room: user.room,
+        users: getUsersInRoom(user.room)
+      })
+      io.to(user.room).emit('message', generateMsg(`Alas... ${user.username} got bored and left`));
+    }
+  })
+
+  /*  
+     // socket.emit('customCountUpdatevent', count)   //? Emits the event to a single client
+     io.emit('customCountUpdatevent', count)   //? Emits the event to all the client instead of a single client
+  */
+})
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}
